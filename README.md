@@ -1,6 +1,17 @@
 # Time-Series-Analysis-R-
 Industry project analysing UK online debit card spending (2020–2025) using SARIMA, VAR, Holt-Winters, and LSTM. Integrated fuel prices to assess economic impact. Delivered forecasting model and insights for business decision-making.
-
+Time-Series-Analysis-R-/
+├── code/                         # R scripts or .Rmd files
+│   └── Cleaned_Anachal_Report.Rmd
+├── datasets/                     # Raw data files
+│   ├── spendings_dataset.xlsx
+│   └── road_fuel_prices_240325.csv
+├── images/                       # Visuals and output plots
+│   ├── SARIMA_Model.png
+│   ├── Model_Comparisons.png
+│   └── ...
+├── README.md                     # Project overview
+└── .git/     
 
 # ⏳ Time Series Forecasting Project (R)
 
