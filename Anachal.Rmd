@@ -1,0 +1,928 @@
+---
+title: "Anchal"
+author: "Fortune"
+date: "2025-05-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## LOADING OF THE NECESSARY PACKAGES
+
+```{r}
+library(tseries)
+library(zoo)
+library(forecast)
+library(dplyr)
+library(xts)
+library(tidyverse)
+library(ggplot2)
+library(readr)
+library(readxl)
+library(lubridate)
+library(tibble)
+library(lmtest)
+library(vars)
+library(Metrics)
+library(MTS)
+library(prophet)
+library(keras)
+library(tensorflow)
+library(corrplot)
+library(randomForest)
+library(rpart)
+library(caret)
+library(e1071)
+library(pROC)
+library(reticulate)
+library(doParallel)
+library(mlr)
+```
+
+## IMPORTING THE DATASETS
+
+```{r}
+##  Set the working directory
+
+getwd()
+setwd("C:/Users/-/OneDrive - University of Bolton/Anachal")
+
+## Import the In-store v online	debit card spending dataset using File Import
+
+spendings_dataset <- read_excel("C:/Users/-/OneDrive - University of Bolton/Anachal/spendings_dataset.xlsx", 
+                                sheet = "Table 3")
+
+## importing the second Dataframe for exogenous variables
+
+road_fuel_prices_240325 <- read_csv("road_fuel_prices_240325.csv", 
+                                    col_types = cols(Date = col_date(format = "%d/%m/%Y"), 
+                                                     `ULSP (Ultra low sulphur unleaded petrol) Pump price in pence/litre` = col_number(), 
+                                                     `ULSD (Ultra low sulphur diesel) Pump price in pence/litre` = col_number()))
+```
+
+## CLEANING OF THE DATASETS
+
+### CLEANING OF PRIMARY DATASET
+
+```{r}
+# Remove the first 6 rows
+spendings_dataset <- spendings_dataset[-(1:6), ]
+
+# Renaming of the columns
+spendings_dataset <- spendings_dataset[, c("Table 3: Instore v online", "...2")]
+spendings_dataset <- spendings_dataset %>%
+  rename(
+    "Date" = "Table 3: Instore v online",
+    "Online Debit Transcations (%)" = "...2"
+  )
+
+# Convert the columns to the appropriate formats
+spendings_dataset$Date <- as.Date(spendings_dataset$Date, format = "%d %b %Y")
+spendings_dataset$`Online Debit Transcations (%)` <- round(as.numeric(spendings_dataset$`Online Debit Transcations (%)`), 2)
+
+# Convert the daily debit card transactions to weekly data
+spendings_dataset <- spendings_dataset %>%
+  mutate(Week = floor_date(Date, "week")) %>%  # Convert to start of the week
+  group_by(Week) %>%
+  summarize(Weekly_Average = mean(`Online Debit Transcations (%)`, na.rm = TRUE))  # Handle special column names
+
+# Drop the first row since it is picking 2019 date
+spendings_dataset <- spendings_dataset[-1, ]
+
+# Rename the columns of the Card spending data-set
+spendings_dataset <- spendings_dataset[, c("Week", "Weekly_Average")]
+spendings_dataset <- spendings_dataset %>%
+  rename(
+    "Date" = "Week",
+    "Online Debit Transcations (%)" = "Weekly_Average"
+  )
+```
+
+### CLEANING OF THE EXOGENOUS DATASET ----------------------------
+
+```{r}
+# Rename columns of the Exogenous Data set
+data2 <- road_fuel_prices_240325[, c("Date", 
+  "ULSP (Ultra low sulphur unleaded petrol) Pump price in pence/litre", 
+  "ULSD (Ultra low sulphur diesel) Pump price in pence/litre")]
+
+data2 <- data2 %>%
+  rename(
+    "ULSP (pence/litre)" = "ULSP (Ultra low sulphur unleaded petrol) Pump price in pence/litre",
+    "ULSD (pence/litre)" = "ULSD (Ultra low sulphur diesel) Pump price in pence/litre"
+  )
+
+# Re-assign the variable
+exo_df <- data2
+
+# Ensure Date column is in Date format
+exo_df$Date <- as.Date(exo_df$Date)
+
+# Filter data from January 2020 to February 2025 from the Exogenous variable
+exo_dataset <- exo_df %>%
+  filter(Date >= as.Date("2020-01-01") & Date <= as.Date("2025-02-28"))
+```
+
+## MERGING OF DATASETS, CLEANING, AND INDEXING
+
+```{r}
+# Add new columns to the Debit Card Spending dataset and merge the exogenous variables to it
+nrow(spendings_dataset)
+spendings_dataset <- spendings_dataset %>%
+  mutate(
+    `ULSP (pence/litre)` = exo_dataset$`ULSP (pence/litre)`,  # Correctly reference the column
+    `ULSD (pence/litre)` = exo_dataset$`ULSD (pence/litre)`   # Correctly reference the column
+  )
+
+colnames(spendings_dataset)
+
+# Convert the columns to the appropriate formats
+spendings_dataset$Date <- as.Date(spendings_dataset$Date)
+spendings_dataset$`ULSP (pence/litre)` <- round(as.numeric(spendings_dataset$`ULSP (pence/litre)`), 2)
+spendings_dataset$`ULSD (pence/litre)` <- round(as.numeric(spendings_dataset$`ULSD (pence/litre)`), 2)
+spendings_dataset$`Online Debit Transcations (%)` <- round(as.numeric(spendings_dataset$`Online Debit Transcations (%)`), 2)
+
+
+spendings_dataset1 <- spendings_dataset
+
+### Converting the Date column to index Column ----------------
+spendings_dataset1 <- column_to_rownames(spendings_dataset, var = "Date")
+
+# View the transformed data
+print(head(spendings_dataset1))
+view(spendings_dataset1)
+nrow(spendings_dataset1)
+
+## Check and Handle NAs in the Dataset -------
+colSums(is.na(spendings_dataset1))
+str(spendings_dataset1)
+summary(spendings_dataset1)
+```
+
+## Exploratory Analysis
+
+## Distribution of the variables
+
+```{r}
+hist(spendings_dataset1$`Online Debit Transcations (%)`, main = "Distribution of Online Debit Transactions", xlab = "%")
+hist(spendings_dataset1$`ULSP (pence/litre)`, main = "ULSP Distribution", xlab = "Pence/Litre")
+hist(spendings_dataset1$`ULSD (pence/litre)`, main = "ULSD Distribution", xlab = "Pence/Litre")
+```
+
+### Outlier Plot for the Variables
+
+```{r}
+##Plot outliers
+boxplot(spendings_dataset1$`Online Debit Transcations (%)`, main = "Online Debit Transactions (%)")
+boxplot(spendings_dataset1$`ULSP (pence/litre)`, main = "ULSP (pence/litre)")
+boxplot(spendings_dataset1$`ULSD (pence/litre)`, main = "ULSD (pence/litre)")
+```
+
+### Bivariate Plots of the Variables
+
+```{r}
+cor(spendings_dataset1)
+plot(spendings_dataset1$`ULSP (pence/litre)`, spendings_dataset1$`Online Debit Transcations (%)`,
+     xlab = "ULSP", ylab = "Online Debit Transactions (%)", main = "ULSP vs Online Debit Transactions")
+
+plot(spendings_dataset1$`ULSD (pence/litre)`, spendings_dataset1$`Online Debit Transcations (%)`,
+     xlab = "ULSD", ylab = "Online Debit Transactions (%)", main = "ULSD vs Online Debit Transactions")
+```
+
+### Plot of the Variables Over time
+
+```{r}
+# Convert the row names into a proper Date column
+spendings_dataset1$Date <- as.Date(rownames(spendings_dataset1))
+
+ggplot(spendings_dataset1, aes(x = Date)) +
+  geom_line(aes(y = `Online Debit Transcations (%)`, color = "Online Debit Transactions")) +
+  geom_line(aes(y = `ULSP (pence/litre)`, color = "ULSP")) +
+  geom_line(aes(y = `ULSD (pence/litre)`, color = "ULSD")) +
+  labs(
+    title = "Online Debit Card Spending, Fuel Prices and Diesel Prices Over Time",
+    x = "Date",
+    y = "Value",
+    color = "Legend"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+```
+
+## CONVERT THE DATA SET TO TIME SERIES
+
+```{r}
+# Convert the log-transformed column to a time series object
+ts_online <- ts(spendings_dataset1, start = c(2020, 1), frequency = 52)
+
+print(head(ts_online))
+```
+
+## CHECK FOR AND HANDLE OUTLIERS
+
+```{r}
+# Function to detect outliers using IQR
+detect_outliers <- function(ts_data) {
+  Q1 <- quantile(ts_data, 0.25, na.rm = TRUE)
+  Q3 <- quantile(ts_data, 0.75, na.rm = TRUE)
+  IQR_value <- Q3 - Q1
+  
+  lower_bound <- Q1 - 1.5 * IQR_value
+  upper_bound <- Q3 + 1.5 * IQR_value
+  
+  outliers <- which(ts_data < lower_bound | ts_data > upper_bound)
+  return(outliers)
+}
+
+# Find outliers in target variable
+outliers_target <- detect_outliers(ts_online)
+
+# Print detected outliers
+print(outliers_target)
+# Function to replace outliers with interpolated values
+handle_outliers <- function(ts_data, outliers) {
+  ts_cleaned <- ts_data
+  ts_cleaned[outliers] <- NA  # Replace outliers with NA
+  ts_cleaned <- na.approx(ts_cleaned, rule = 2)  # Interpolate missing values
+  return(ts_cleaned)
+}
+
+# Handle outliers in target variable
+ts_online_cleaned <- handle_outliers(ts_online, outliers_target)
+```
+
+## Reconstructing the TS data
+
+```{r}
+ts_online_cleaned <- ts(ts_online_cleaned, start = c(2020, 1), frequency = 52 )
+
+class(ts_online_cleaned)  
+str(ts_online_cleaned)
+print(head(ts_online_cleaned))
+```
+
+## Visualizing the Cleaned Time Series data
+
+```{r}
+autoplot(ts_online_cleaned)
+```
+
+## SEASONAL DECOMPOSITION OF THE TIME SERIES
+
+```{r}
+# Extract the specific time series as a vector from the matrix
+ts_card <- ts_online_cleaned[, "Online Debit Transcations (%)"]
+ts_USLP <- ts_online_cleaned[, "ULSP (pence/litre)"]
+ts_USLD <- ts_online_cleaned[, "ULSD (pence/litre)"]
+
+decomposed_card <- stl(ts(ts_card, frequency = 52), s.window = "periodic") # Seasonal decomposition
+decomposed_USLP <- stl(ts(ts_USLP, frequency = 52), s.window = "periodic") 
+decomposed_USLD <- stl(ts(ts_USLD, frequency = 52), s.window = "periodic") 
+```
+
+## Plot the decomposition
+
+```{r}
+# Plot the decomposition
+autoplot(decomposed_card) +
+  labs(title = "Decomposition of Online Debit Transactions (%)",
+       x = "Date") +
+  theme_minimal()
+
+autoplot(decomposed_USLP) +
+  labs(title = "Decomposition of ULSP",
+       x = "Date") +
+  theme_minimal()
+
+autoplot(decomposed_USLD) +
+  labs(title = "Decomposition of ULSD",
+       x = "Date") +
+  theme_minimal()
+```
+
+## ADF test TO CHECK FOR STATIONARITY
+
+```{r}
+# PERFORM ADF test TO CHECK FOR STATIONARITY
+
+adf_test_card <- adf.test(ts_card)
+adf_test_USLP <- adf.test(ts_USLP)
+adf_test_USLD <- adf.test(ts_USLD)
+
+# Print results
+
+print(adf_test_card)
+print(adf_test_USLP )
+print(adf_test_USLD)
+```
+
+## Differencing the data set using NDIFFs
+
+```{r}
+# Apply ndiffs to determine how many differences are needed for stationarity
+# Find the number of differences required to make the series stationary
+diffs_needed_card <- ndiffs(ts_card)
+diffs_needed_USLP <- ndiffs(ts_USLP)
+diffs_needed_USLD <- ndiffs(ts_USLD)
+
+# Print the number of differences needed for each time series
+print(diffs_needed_card)
+print(diffs_needed_USLP)
+print(diffs_needed_USLD)
+```
+
+## Apply differencingApply Differencing
+
+```{r}
+# Apply differencing based on the number of differences calculated
+# differenced_card <- diff(ts_card, differences = diffs_needed_card)
+differenced_USLP <- diff(ts_USLP, differences = diffs_needed_USLP)
+differenced_USLD <- diff(ts_USLD, differences = diffs_needed_USLD)
+
+# Print the differenced time series
+print(head(differenced_USLP))
+print(head(differenced_USLD))
+
+length(ts_card)
+length(differenced_USLP) 
+length(differenced_USLD)
+```
+
+## Apply the Augmented Dickey-Fuller test on the differenced time series
+
+```{r}
+adf_test_USLP <- adf.test(differenced_USLP)
+adf_test_USLD <- adf.test(differenced_USLD)
+
+# Step 4: Print the results of the ADF tests
+print(adf_test_USLP)
+print(adf_test_USLD)
+```
+
+## ALIGN THE LENGTHS OF THE DIFFERENCED VARIABLES
+
+```{r}
+ # 1. Align lengths
+    card_aligned <- ts_card[-1]  # Now length = 268
+        # 2. Combine differenced exogenous variables
+    exo_full <- cbind(differenced_USLP, differenced_USLD)
+    length(card_aligned)
+    dim(exo_full)
+```
+
+```{r}
+length(card_aligned)
+    dim(exo_full)
+```
+
+## SPLIT THE DATASET INTO TRAINING AND TESTING SETS
+
+```{r}
+# Split index (80% training, 20% testing)
+    n <- length(card_aligned)  # 268
+    split_index <- floor(0.8 * n)  # 214
+    
+    # 4. Create training and testing sets
+    card_train <- card_aligned[1:split_index]
+    card_test  <- card_aligned[(split_index + 1):n]
+    
+    exo_train <- exo_full[1:split_index, ]
+    exo_test  <- exo_full[(split_index + 1):n, ]
+    
+    # Convert target (card_train) and (card_test) to time series with weekly frequency
+    card_train_ts <- ts(card_train, start = c(2020, 1), frequency = 52)
+    card_test_ts  <- ts(card_test, start = c(2020, length(card_train) + 1), frequency = 52)
+    
+    # Convert exogenous variables (exo_train and exo_test) to time series with weekly frequency
+    exo_train_ts <- ts(exo_train, start = c(2020, 1), frequency = 52)
+    exo_test_ts  <- ts(exo_test, start = c(2020, length(exo_train) + 1), frequency = 52)
+```
+
+## UNIVARTE ANALYSIS WITH SARIMA
+
+```{r}
+## SARTIMA FOR UNIVARTE ANALYSIS
+    sarima_model <- auto.arima(card_train_ts, seasonal = TRUE)
+    summary(sarima_model)  
+    
+    # Forecast the test data using the model
+    sarima_forecast <- forecast(sarima_model, h = 52)
+    
+    # Plot the actual test data and forecast predictions
+    autoplot(sarima_forecast) +
+      autolayer(card_test_ts, series = "Actual", color = "blue") +
+      xlab("Time") + ylab("Values") +
+      ggtitle("Actual vs Predicted Values for SARIMA Model") +
+      scale_color_manual(values = c("red", "blue")) +
+      guides(colour = guide_legend(title = "Legend"))
+```
+
+## 
+
+```{r}
+
+```
+
+```{r}
+###PLOT THE ACTUAL VERSES PREDICTED VALUES
+    plot(card_test_ts, col = "blue", lwd = 2, xlab = "Time", ylab = "Values", main = "Actual vs Predicted Values for SARIMA")
+    lines(sarima_forecast$mean, col = "red", lwd = 2)
+    legend("topleft", legend = c("Actual", "Predicted"), col = c("blue", "red"), lwd = 2)
+```
+
+## Evaluate the accuracy of the model
+
+```{r}
+## Evaluate the accuracy of the model
+  # Calculate the Root Mean Square Error (RMSE) for the SARIMA model
+    rmse_sarima <- sqrt(mean((card_test_ts - sarima_forecast$mean)^2))
+    # Display the RMSE value
+    cat("Root Mean Square Error (RMSE) of the SARIMA Model:", rmse_sarima)
+    print(acc)
+```
+
+## Check for Residuals
+
+```{r}
+checkresiduals(sarima_model)
+```
+
+```{r}
+# Convert rownames (index) to a proper Date column if not already
+spendings_dataset1 <- spendings_dataset1 %>%
+  mutate(Date = as.Date(rownames(spendings_dataset1)))
+
+# Filter the dataset to start from January 2020 explicitly
+monthly_data <- spendings_dataset1 %>%
+  filter(Date >= as.Date("2020-01-01")) %>%  # Only keep data from Jan 2020 onwards
+  mutate(YearMonth = floor_date(Date, "month")) %>%
+  group_by(YearMonth) %>%
+  summarise(Monthly_Spending = mean(`Online Debit Transcations (%)`, na.rm = TRUE)) %>%
+  ungroup()
+
+# Plot the data with values on each point
+    ggplot(monthly_data, aes(x = YearMonth, y = Monthly_Spending)) +
+      geom_line(color = "steelblue", size = 1) +
+      geom_point(color = "darkred", size = 2) +  # Add point markers
+      geom_text(aes(label = round(Monthly_Spending, 1)), 
+                vjust = -0.5, size = 3, color = "black") +  # Add labels
+      scale_x_date(date_breaks = "1 month", date_labels = "%b %Y") +
+      labs(title = "Monthly Patterns and Seasonal Peaks in Online Debit Card Spending",
+           x = "Month",
+           y = "Spending (%)") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+```{r}
+print(monthly_data)
+```
+
+## SARIMAX Model
+
+```{r}
+ sarimax_model <- auto.arima(card_train_ts, xreg = exo_train_ts, seasonal = TRUE)
+    summary(sarimax_model)  
+    
+    # Forecast the test data using the model
+    forecast_sarimax <- forecast(sarimax_model, xreg = exo_test_ts, h = 52)
+```
+
+## Plot of the Model
+
+```{r}
+# Plot the actual test data and forecast predictions
+    autoplot(forecast_sarimax) +
+      autolayer(card_test_ts, series = "Actual", color = "blue") +
+      xlab("Time") + ylab("Values") +
+      ggtitle("Actual vs Predicted Values for SARIMAX Model") +
+      scale_color_manual(values = c("red", "blue")) +
+      guides(colour = guide_legend(title = "Legend"))
+```
+
+## Evaluation of SARIMAX Model
+
+```{r}
+# Calculate the Root Mean Square Error (RMSE) for the SARIMA model
+    rmse_sarimax <- sqrt(mean((card_test_ts - forecast_sarimax$mean)^2))
+    
+    # Display the RMSE value
+    cat("Root Mean Square Error (RMSE) of the SARIMA Model:", rmse_sarimax)
+```
+
+## Residuals Check
+
+```{r}
+ checkresiduals(sarimax_model)
+```
+
+## FITING VAR: VECTOR AUTO REGRESSION MODEL
+
+```{r}
+# Combine into one multivariate time series object
+    var_data <- cbind(
+      card = card_aligned,
+      uslp = differenced_USLP,
+      usld = differenced_USLD
+    )
+    
+    # Convert to time series with weekly frequency
+    var_ts <- ts(var_data, start = c(2020, 2), frequency = 52)  # start from 2nd week since first row was dropped
+    # Select the Best or Optimal Lag
+    lag_selection <- VARselect(var_ts, lag.max = 10, type = "const")
+    print(lag_selection$selection)  # Shows optimal lags based on AIC, BIC, etc.
+    # Fit the Model Now
+    var_model <- vars::VAR(var_ts, p = 2, type = "const")
+    summary(var_model)
+    # Check the roots of the VAR model (for stationarity)
+    roots(var_model)
+    # Forecast for the next 54 periods (weeks)
+    var_forecast <- predict(var_model, n.ahead = 52)
+```
+
+## Plot of the Forecasts
+
+```{r}
+# Dates
+start_date <- as.Date("2020-01-13")
+n_train <- length(card_aligned)
+n_forecast <- length(forecast_target)
+dates <- seq(start_date, by = "week", length.out = n_train + n_forecast)
+
+# Data frame
+df_full <- tibble(
+  Date = dates,
+  Actual = c(card_aligned, rep(NA, n_forecast)),
+  Forecast = c(rep(NA, n_train), forecast_target)
+)
+
+# Plot with explicit filtering
+ggplot() +
+  geom_line(data = df_full %>% filter(!is.na(Actual)),
+            aes(x = Date, y = Actual, color = "Actual"), size = 1.2) +
+  geom_line(data = df_full %>% filter(!is.na(Forecast)),
+            aes(x = Date, y = Forecast, color = "Forecast"), size = 1.2, linetype = "dashed") +
+  scale_color_manual(values = c("Actual" = "blue", "Forecast" = "red")) +
+  labs(
+    title = "VAR Forecast of Online Debit Card Spending",
+    x = "Date",
+    y = "Spending",
+    color = "Legend"
+  ) +
+  theme_minimal(base_size = 14) +
+  geom_vline(xintercept = dates[n_train], linetype = "dotted", color = "gray40") +
+  annotate("text", x = dates[n_train + 2], y = max(card_aligned, na.rm = TRUE),
+           label = "Forecast begins", hjust = 0, color = "gray40")
+```
+
+## Performance Evaluation of VAR
+
+```{r}
+# Calculate and print the RMSE for the VAR model
+    rmse_var <- sqrt(mean((actual_target - forecast_target)^2))
+    cat("Root Mean Square Error (RMSE) for VAR:", rmse_var, "\n")
+```
+
+## Residuals Check on VAR
+
+```{r}
+ #Check Residuals
+    # Extract residuals from the VAR model
+    var_residuals <- residuals(var_model)
+    
+    ggtsdisplay(var_residuals[, 1], main = "Residuals for card")
+    ggtsdisplay(var_residuals[, 2], main = "Residuals for uslp")
+    ggtsdisplay(var_residuals[, 3], main = "Residuals for usld")
+    
+    
+    acf(var_residuals[, 1], main = "ACF for card residuals")
+    acf(var_residuals[, 2], main = "ACF for uslp residuals")
+    acf(var_residuals[, 3], main = "ACF for usld residuals")
+    
+    # Perform Ljung-Box test for residuals of the first variable
+    Box.test(var_residuals[, 1], type = "Ljung-Box")
+    
+    # Perform Ljung-Box test for residuals of the second variable
+    Box.test(var_residuals[, 2], type = "Ljung-Box")
+    
+    # Perform Ljung-Box test for residuals of the third variable
+    Box.test(var_residuals[, 3], type = "Ljung-Box")
+```
+
+## Holt-Winters model
+
+```{r}
+# Fit Holt-Winters model to the training data (card_train_ts)
+    holt_winters_model <- HoltWinters(card_train_ts)
+    
+    # Forecast the next 52 periods (weeks)
+    holt_winters_forecast <- forecast(holt_winters_model, h = 52)
+```
+
+## Plot of the Forecast
+
+```{r}
+# Plot the actual vs forecasted values
+    autoplot(holt_winters_forecast)
+```
+
+## Performance Evaluation of Holt-Winters Method
+
+```{r}
+# Evaluate forecast accuracy using RMSE
+    rmse_hw <- sqrt(mean((card_test_ts - holt_winters_forecast$mean)^2))
+    cat("Root Mean Square Error (RMSE) for Holt-Winters:", rmse_hw, "\n")
+```
+
+## Residual Check of Holt-Winters method
+
+```{r}
+checkresiduals(holt_winters_model)
+```
+
+## EVALUATE THE MODELS
+
+```{r}
+Sarima <- rmse_sarima
+    Sarimax <- rmse_sarimax
+    VectorAR <- rmse_var
+    HltWM <- rmse_hw
+```
+
+## Plot the Models
+
+```{r}
+# Create a data frame with these values ------------
+    data <- data.frame(
+      model = c("SARIMA MODEL", "SARIMAX MODEL", "VECTOR AUTO REGRESSION MODEL", "HOLT WINTERS MODEL"),
+      performance = c(Sarima , Sarimax, VectorAR, HltWM)
+    )
+    
+   
+    ggplot(data, aes(x = model, y = performance, fill = model)) +
+      geom_bar(stat = "identity") +
+      geom_text(aes(label = round(performance, 2)), vjust = -0.5, color = "black") +  # Add the values on top of bars
+      theme_minimal() +
+      labs(title = "Performance Comparison of Models using MAE", x = "Model", y = "Performance") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    ## Display the results of the Evaluation metrics
+    print(data)
+```
+
+## Forecasting with the Best Model
+
+```{r}
+#Forecasting with the best model
+    # Convert full dataset to weekly time series
+    card_ts <- ts(card_aligned, start = c(2020, 1), frequency = 52)
+    
+    # Fit SARIMA model
+    sarima_model_full <- auto.arima(card_ts, seasonal = TRUE)
+    
+    # Forecast next 26 weeks (Q1 & Q2 2025)
+    sarima_forecast_full <- forecast(sarima_model_full, h = 26)
+    
+```
+
+## Plot the Forecasts
+
+```{r}
+# Create date sequence starting after the last observation
+    start_date <- as.Date("2025-02-01")  # adjust to match your dataset end
+    forecast_dates <- seq(from = start_date, by = "week", length.out = 26)
+    
+    # Create forecast data frame
+    forecast_df <- data.frame(
+      Date = forecast_dates,
+      Forecast = as.numeric(sarima_forecast_full$mean)
+    )
+    
+    # Plot with point markers and value labels
+    ggplot(forecast_df, aes(x = Date, y = Forecast)) +
+      geom_line(color = "darkred", size = 1.2) +
+      geom_point(color = "blue", size = 2) +
+      geom_text(aes(label = round(Forecast, 1)), vjust = -0.5, size = 3.5) +
+      scale_x_date(date_breaks = "1 month", date_labels = "%b %Y") +
+      labs(title = "Forecasted Online Debit Card Spending (Q1 & Q2 2025)",
+           x = "Month",
+           y = "Spending (%)") +
+      theme_minimal(base_size = 14) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## GRANGER CAUSALITY TEST OF THE EXOGENOUS VARIABLES ON THE TARGET VARIABLE
+
+```{r}
+# Convert to numeric vectors if needed
+    card_train_vec <- as.numeric(card_train_ts)
+    
+    # If exo_train_ts is a matrix or data frame with multiple exogenous variables:
+    if (is.matrix(exo_train_ts) || is.data.frame(exo_train_ts)) {
+      for (i in 1:ncol(exo_train_ts)) {
+        cat("\nGranger Causality Test for Exogenous Variable:", colnames(exo_train_ts)[i], "\n")
+        exo_var <- as.numeric(exo_train_ts[, i])
+        
+        for (lag in 1:3) {
+          cat("Lag =", lag, "\n")
+          print(grangertest(card_train_vec ~ exo_var, order = lag))
+        }
+      }
+    } else {
+      # If only one exogenous variable (vector)
+      exo_var <- as.numeric(exo_train_ts)
+      cat("\nGranger Causality Test for Single Exogenous Variable\n")
+      
+      for (lag in 1:3) {
+        cat("Lag =", lag, "\n")
+        print(grangertest(card_train_vec ~ exo_var, order = lag))
+      }
+    }
+    
+    
+    # Prepare data storage for results
+    granger_results <- data.frame()
+    
+    # Convert dependent variable to numeric
+    card_train_vec <- as.numeric(card_train_ts)
+    
+    # Run Granger causality test for each exogenous variable across lags
+    if (is.matrix(exo_train_ts) || is.data.frame(exo_train_ts)) {
+      for (i in 1:ncol(exo_train_ts)) {
+        exo_name <- colnames(exo_train_ts)[i]
+        exo_var <- as.numeric(exo_train_ts[, i])
+        
+        for (lag in 1:3) {
+          test <- grangertest(card_train_vec ~ exo_var, order = lag)
+          p_value <- test$`Pr(>F)`[2]
+          
+          granger_results <- rbind(granger_results, data.frame(
+            Variable = exo_name,
+            Lag = lag,
+            P_Value = p_value
+          ))
+        }
+      }
+    } else {
+      exo_var <- as.numeric(exo_train_ts)
+      for (lag in 1:3) {
+        test <- grangertest(card_train_vec ~ exo_var, order = lag)
+        p_value <- test$`Pr(>F)`[2]
+        
+        granger_results <- rbind(granger_results, data.frame(
+          Variable = "Exogenous_Var",
+          Lag = lag,
+          P_Value = p_value
+        ))
+      }
+    }
+```
+
+## Plot of the Effect
+
+```{r}
+# Create heatmap
+    ggplot(granger_results, aes(x = factor(Lag), y = Variable, fill = P_Value)) +
+      geom_tile(color = "white") +
+      scale_fill_gradient2(low = "darkgreen", mid = "yellow", high = "red", midpoint = 0.05,
+                           name = "P-Value") +
+      geom_text(aes(label = round(P_Value, 3)), color = "black", size = 3) +
+      labs(
+        title = "Granger Causality Test - P-Value Heatmap of Exogenous Variables on the Target Variable",
+        x = "Lag",
+        y = "Exogenous Variable"
+      ) +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+# PART B : OPTIMISATION
+
+```{r}
+
+## Load Dataset for Optimisation
+          supply_dataset <- read.csv("C:/Users/-/OneDrive - University of Bolton/Anachal/supply_chain_data.csv")
+        view(supply_dataset)
+```
+
+## Assign delivery deadlines based on hypothetical priority logic
+
+```{r}
+# Assign delivery deadlines based on hypothetical priority logic
+        supply_dataset$MaxAllowedTime <- ifelse(
+          supply_dataset$Transportation.modes == "Air", 3,
+          ifelse(supply_dataset$Transportation.modes == "Road", 7,
+                 ifelse(supply_dataset$Transportation.modes == "Rail", 10,
+                        ifelse(supply_dataset$Transportation.modes == "Sea", 15, NA)))
+        )
+        
+        # Filter orders that violate time constraints
+        valid_orders <- supply_dataset %>% filter(Shipping.times <= MaxAllowedTime)
+        
+        # Create cost vector
+        costs <- valid_orders$Shipping.costs
+        
+        # Decision variable count
+        n <- nrow(valid_orders)
+        
+        # Constraint matrix
+        A <- diag(n)
+        
+        # RHS (demand for each order)
+        b <- valid_orders$Order.quantities
+        
+        # Direction of constraints
+        dir <- rep("=", n)
+```
+
+## Solve the LPP
+
+```{r}
+# Solve LP
+        solution <- lp("min", objective.in = costs,
+                       const.mat = A,
+                       const.dir = dir,
+                       const.rhs = b,
+                       all.int = TRUE)
+        
+```
+
+## Print the Output
+
+```{r}
+# Output solution
+        print(solution$status)  # 0 = success
+        print(solution$solution)
+        print(sum(solution$solution * costs))  # Total cost
+```
+
+## Summary
+
+```{r}
+nrow(supply_dataset) - nrow(valid_orders)
+        valid_orders$ShippedQty <- solution$solution
+        summary_by_mode <- valid_orders %>%
+          group_by(Transportation.modes) %>%
+          summarise(TotalQty = sum(ShippedQty),
+                    TotalCost = sum(ShippedQty * Shipping.costs))
+        print(summary_by_mode) 
+```
+
+## Summary 2
+
+```{r}
+sum(supply_dataset$Shipping.costs * supply_dataset$Order.quantities)
+        # Pre-optimization total cost (baseline)
+        total_cost_before <- sum(supply_dataset$Shipping.costs * supply_dataset$Order.quantities)
+        
+        # Optimized total cost
+        total_cost_after <- sum(solution$solution * costs)
+        
+        # Improvement
+        savings <- total_cost_before - total_cost_after
+        percent_savings <- (savings / total_cost_before) * 100
+        
+        # Print
+        cat("Total Cost Before Optimization:", total_cost_before, "\n")
+        cat("Total Cost After Optimization:", total_cost_after, "\n")
+        cat("Total Savings:", savings, "\n")
+        cat("Percent Savings:", round(percent_savings, 2), "%\n")  
+```
+
+## Before and After Optimisation Comparism
+
+```{r}
+before_summary <- supply_dataset %>%
+          group_by(Transportation.modes) %>%
+          summarise(
+            TotalQty = sum(Order.quantities),
+            TotalCost = sum(Order.quantities * Shipping.costs),
+            CostPerUnit = TotalCost / TotalQty
+          )
+        
+        valid_orders$ShippedQty <- solution$solution
+        
+        after_summary <- valid_orders %>%
+          group_by(Transportation.modes) %>%
+          summarise(
+            TotalQty = sum(ShippedQty),
+            TotalCost = sum(ShippedQty * Shipping.costs),
+            CostPerUnit = TotalCost / TotalQty
+          )
+        
+        comparison <- left_join(before_summary, after_summary, by = "Transportation.modes", suffix = c("_Before", "_After"))
+        
+        # Add savings columns
+        comparison <- comparison %>%
+          mutate(
+            QtyDiff = TotalQty_Before - TotalQty_After,
+            CostDiff = TotalCost_Before - TotalCost_After,
+            CostSavingsPct = round((CostDiff / TotalCost_Before) * 100, 2)
+          )
+        
+        print(comparison)
+```
